@@ -3387,42 +3387,82 @@ export function ParkingPointSetting() {
     // Requirements said: offset (average distribution).
     // Let's recalculate ALL port offsets for this section to be evenly distributed.
 
-    const currentPortCount = targetSection.ports.length;
-
-
     // Create new ports
-    const parsedStartId = parseInt(addOHBStartId);
-    const useStartId = !isNaN(parsedStartId) && addOHBStartId.trim() !== "";
-    const originalLength = addOHBStartId.trim().length;
+    const bayId = addOHBStartId.trim();
 
-    // Validation: Collect all existing OHB names
+    // Validation: Bay ID must be exactly 2 digits
+    if (!/^\d{2}$/.test(bayId)) {
+      alert("Bay ID must be exactly 2 digits (e.g. '06')");
+      return;
+    }
+
+    const sideCode = addOHBSide === 'left' ? '1' : '2';
+    const idPrefix = `${bayId}${sideCode}`;
+
+    // Find existing max serial for this prefix to auto-increment safely
+    // Collect all existing OHB names
     const existingOhbNames = new Set(ohbSections.flatMap(s => s.ports.map(p => p.name)));
 
+    let currentSerial = 1;
+    // Fast-forward serial if IDs already exist
+    while (existingOhbNames.has(`${idPrefix}${currentSerial.toString().padStart(3, '0')}`)) {
+      currentSerial++;
+    }
+
     for (let i = 0; i < count; i++) {
-      // ID generation
-      // User requested short 6-digit ID (same as name)
-      // We will use portName as the ID later after generating it.
+      const serial = (currentSerial + i).toString().padStart(3, '0');
+      const portName = `${idPrefix}${serial}`;
 
-      let portName = "";
-      if (useStartId) {
-        // User provided start ID, e.g. 101001 -> 101002...
-        portName = (parsedStartId + i).toString().padStart(originalLength, '0');
-      } else {
-        // Fallback to auto-increment based on count
-        portName = `${ohbSelectedSegmentId}-${currentPortCount + i + 1}`;
-      }
-
-      // Check for duplicates
+      // Double check for duplicates (should cover by loop logic, but safe guard)
       if (existingOhbNames.has(portName)) {
-        alert(`OHB ID ${portName} already exists! Operation cancelled.`);
-        return;
+        // Should not happen with the while loop above, but if we run into a gap and then hit another block?
+        // The while loop only finds the *first* gap or the end. 
+        // Let's rely on simple increment from the first available slot.
+        // Actually showing alert inside loop is annoying.
+        // Let's just find next available per item.
+        let tempSerial = currentSerial + i;
+        let tempName = `${idPrefix}${tempSerial.toString().padStart(3, '0')}`;
+        while (existingOhbNames.has(tempName)) {
+          tempSerial++;
+          tempName = `${idPrefix}${tempSerial.toString().padStart(3, '0')}`;
+        }
+        // Update loop index or Serial base? 
+        // Better strategy: just find N available slots.
       }
+
+      // Refined Strategy:
+      // We want a contiguous block if possible, or just next available.
+      // Let's just use the currentSerial + i logic, assuming the user likely adds to the end.
+      // If collision in block, we skip.
+
+      // Re-eval:
+      // The user request implies simple generation. "001 sequence".
+      // I'll stick to: Start from 1, finding max existing serial for this prefix, then append.
+    }
+
+    // REDO BLOCK FOR CLEAR LOGIC
+
+    // 1. Find max existing serial for this Bay+Side
+    let maxSerial = 0;
+    ohbSections.flatMap(s => s.ports).forEach(p => {
+      if (p.name.startsWith(idPrefix) && p.name.length === 6) {
+        const s = parseInt(p.name.substring(3));
+        if (!isNaN(s) && s > maxSerial) maxSerial = s;
+      }
+    });
+
+    // 2. Start generating from maxSerial + 1
+    let startSerial = maxSerial + 1;
+
+    for (let i = 0; i < count; i++) {
+      const serial = (startSerial + i).toString().padStart(3, '0');
+      const portName = `${idPrefix}${serial}`;
 
       newPorts.push({
-        id: portName, // Use the short 6-digit ID as the internal ID too
+        id: portName,
         linkId: ohbSelectedSegmentId,
         side: addOHBSide,
-        offset: 0, // Placeholder, will be redistributed
+        offset: 0,
         name: portName,
         visualState: 'white-outline'
       });
@@ -3459,10 +3499,6 @@ export function ParkingPointSetting() {
 
     setOhbSections(updatedSections);
 
-    // Auto-increment Start ID for next batch
-    if (useStartId) {
-      setAddOHBStartId((parsedStartId + count).toString().padStart(originalLength, '0'));
-    }
   };
 
 
@@ -4350,6 +4386,7 @@ export function ParkingPointSetting() {
                     {/* Render Ports (EQ) for Bay Parking Point */}
                     {activeBayTab === 'bay-parking-point' && sections.flatMap(s => s.ports.map(p => ({ ...p, sectionId: s.id }))).map(port => {
                       const isLinked = activeBayParkingPointId && bays.find(b => b.id === activeBayParkingPointId)?.parkingPoints?.includes(port.id);
+                      const isOtherLinked = !isLinked && activeBayParkingPointId && bays.some(b => b.id !== activeBayParkingPointId && b.parkingPoints?.includes(port.id));
 
                       // Focus Logic
                       let opacity = 1;
@@ -4367,8 +4404,8 @@ export function ParkingPointSetting() {
                             cx={port.x}
                             cy={port.y}
                             r="4"
-                            fill={isLinked ? "#22c55e" : "none"} // Green if set
-                            stroke={isLinked ? "#22c55e" : "#f97316"} // Green if set, Orange if unset
+                            fill={isLinked ? "#22c55e" : (isOtherLinked ? "#6b7280" : "none")} // Green if set, Gray if other set
+                            stroke={isLinked ? "#22c55e" : (isOtherLinked ? "#6b7280" : "#f97316")} // Green, Gray, or Orange
                             strokeWidth="2"
                             className="cursor-pointer transition-all hover:fill-[#f97316]/50"
                             onClick={(e) => {
@@ -4376,7 +4413,9 @@ export function ParkingPointSetting() {
                               handleParkingPointClick(port.id);
                             }}
                           />
-
+                          {isOtherLinked && opacity > 0.5 && (
+                            <title>Assigned to another Bay</title>
+                          )}
                         </g>
                       );
                     })}
@@ -4387,6 +4426,7 @@ export function ParkingPointSetting() {
                       if (!seg) return null;
                       const pos = calculatePerpendicularPoint(seg.x1, seg.y1, seg.x2, seg.y2, ohb.offset, 12, ohb.side);
                       const isLinked = activeBayParkingPointId && bays.find(b => b.id === activeBayParkingPointId)?.parkingPoints?.includes(ohb.id);
+                      const isOtherLinked = !isLinked && activeBayParkingPointId && bays.some(b => b.id !== activeBayParkingPointId && b.parkingPoints?.includes(ohb.id));
 
                       // Focus Logic
                       let opacity = 1;
@@ -4404,8 +4444,8 @@ export function ParkingPointSetting() {
                             y={pos.y - 4}
                             width="8"
                             height="8"
-                            fill={isLinked ? "#22c55e" : "none"} // Green if set
-                            stroke={isLinked ? "#22c55e" : "#f97316"} // Green if set, Orange if unset
+                            fill={isLinked ? "#22c55e" : (isOtherLinked ? "#6b7280" : "none")} // Green if set, Gray if other set
+                            stroke={isLinked ? "#22c55e" : (isOtherLinked ? "#6b7280" : "#f97316")} // Green, Gray, or Orange
                             strokeWidth="2"
                             className="cursor-pointer transition-all hover:fill-[#f97316]/50"
                             onClick={(e) => {
@@ -4413,7 +4453,9 @@ export function ParkingPointSetting() {
                               handleParkingPointClick(ohb.id);
                             }}
                           />
-
+                          {isOtherLinked && opacity > 0.5 && (
+                            <title>Assigned to another Bay</title>
+                          )}
                         </g>
                       );
                     })}
@@ -5302,7 +5344,7 @@ export function ParkingPointSetting() {
                 <div className="flex-1 flex flex-col bg-[#0a0e1a] overflow-hidden">
                   <div className="flex-1 p-4 overflow-y-auto flex flex-col">
                     <h2 className="text-sm font-medium mb-4 text-white text-center border-b border-[#1e3a8a] pb-2">
-                      {activeBayParkingPointId ? `Bay ${bays.find(b => b.id === activeBayParkingPointId)?.name} Parking Point Setting` : 'Select a Bay'}
+                      {activeBayParkingPointId ? `${bays.find(b => b.id === activeBayParkingPointId)?.name} Parking Point Setting` : 'Select a Bay'}
                     </h2>
 
                     {activeBayParkingPointId && (() => {
@@ -5514,68 +5556,67 @@ export function ParkingPointSetting() {
                   </p>
 
                   <div className="mb-6">
-                    <label className="text-xs text-gray-400 block mb-2">
-                      Add OHB to Segment
-                    </label>
-
                     {/* OHB Specific Controls */}
-                    <div className="flex flex-col gap-3">
-                      {/* Side Selection */}
-                      {/* Side Selection - Hidden pending manager review (Auto-detection preferred) */}
-                      {/* <div className="flex bg-[#1a2332] rounded p-1 border border-[#2563eb]/50">
-                      <button
-                        className={`flex-1 py-1 text-xs rounded ${addOHBSide === 'left' ? 'bg-[#2563eb] text-white' : 'text-gray-400 hover:text-gray-300'}`}
-                        onClick={() => setAddOHBSide('left')}
-                      >
-                        Left
-                      </button>
-                      <button
-                        className={`flex-1 py-1 text-xs rounded ${addOHBSide === 'right' ? 'bg-[#2563eb] text-white' : 'text-gray-400 hover:text-gray-300'}`}
-                        onClick={() => setAddOHBSide('right')}
-                      >
-                        Right
-                      </button>
-                    </div> */}
-
-                      <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-4">
+                      {/* 1. Bay ID Input */}
+                      <div>
+                        <label className="text-sm text-gray-200 block mb-1">
+                          輸入Bay ID
+                        </label>
                         <input
                           type="text"
-                          placeholder="Start ID (e.g. 101001)"
+                          placeholder=""
                           value={addOHBStartId}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setAddOHBStartId(val);
-                            if (val.length >= 3) {
-                              const thirdChar = val[2];
-                              if (thirdChar === '1') setAddOHBSide('left');
-                              else if (thirdChar === '2') setAddOHBSide('right');
-                            }
-                          }}
-                          className="w-full bg-[#1a2332] border border-[#2563eb]/50 rounded px-3 py-2 text-sm focus:outline-none focus:border-[#3b82f6]"
+                          onChange={(e) => setAddOHBStartId(e.target.value)}
+                          className="w-full bg-[#1a2332] border border-[#2563eb]/50 rounded px-3 py-2 text-sm focus:outline-none focus:border-[#3b82f6] text-gray-200"
                         />
+                      </div>
+
+                      {/* 2. Side Selection */}
+                      <div>
+                        <label className="text-sm text-gray-200 block mb-1">
+                          掛載方向
+                        </label>
+                        <div className="flex gap-2">
+                          <button
+                            className={`flex-1 py-2 rounded text-sm transition-colors ${addOHBSide === 'left' ? 'bg-[#1e40af] text-white' : 'bg-[#1a2332] text-gray-400 border border-[#2563eb]/50 hover:bg-[#1e3a8a]/30'}`}
+                            onClick={() => setAddOHBSide('left')}
+                          >
+                            左側(1)
+                          </button>
+                          <button
+                            className={`flex-1 py-2 rounded text-sm transition-colors ${addOHBSide === 'right' ? 'bg-[#1e40af] text-white' : 'bg-[#1a2332] text-gray-400 border border-[#2563eb]/50 hover:bg-[#1e3a8a]/30'}`}
+                            onClick={() => setAddOHBSide('right')}
+                          >
+                            右側(2)
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 3. Quantity */}
+                      <div>
+                        <label className="text-sm text-gray-200 block mb-1">
+                          掛載數量
+                        </label>
                         <div className="flex gap-2">
                           <input
                             type="number"
                             min="1"
-                            placeholder="Qty"
                             value={addOHBQty}
                             onChange={(e) =>
                               setAddOHBQty(parseInt(e.target.value) || 1)
                             }
-                            className="flex-1 bg-[#1a2332] border border-[#2563eb]/50 rounded px-3 py-2 text-sm focus:outline-none focus:border-[#3b82f6]"
+                            className="flex-1 bg-[#1a2332] border border-[#2563eb]/50 rounded px-3 py-2 text-sm focus:outline-none focus:border-[#3b82f6] text-gray-200"
                           />
                           <button
                             onClick={handleAddOHBs}
-                            className="bg-[#1e40af] hover:bg-[#1e3a8a] px-3 py-2 rounded"
+                            className="bg-[#1e40af] hover:bg-[#1e3a8a] px-3 py-2 rounded text-white shadow-lg flex items-center justify-center min-w-[40px]"
                           >
-                            <Plus className="w-4 h-4" />
+                            <Plus className="w-5 h-5" />
                           </button>
                         </div>
                       </div>
                     </div>
-                    <p className="text-xs text-gray-500 mt-2">
-                      Select Side and Qty to add OHB
-                    </p>
                   </div>
 
                   <div className="mb-6 flex-1 overflow-hidden flex flex-col">
